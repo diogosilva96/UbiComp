@@ -32,17 +32,16 @@ public class MainActivity extends AppCompatActivity {
 
     BluetoothSocket _btSocket;
     BluetoothDevice _Device = null;
-    int lastSentDesiredTemp = 0 ;
-    boolean sendMsg = false;
+    int _lastSentDesiredTemp = 0 ; //ultima desiredtemp que foi enviada
+    boolean _sendMsg = false; // quando é para enviar pelo canal de comunicação msg esta é true
     
 
     final byte delimiter = 59; //caracter ; em ASCII
     int readBufferPosition = 0;
 
- //testar o state
+
     public void sendBtMsg(String msg2send){
-        //UUID uuid = UUID.fromString("00001101-0000-1000-8000-00805f9b34fb"); //Standard SerialPortService ID
-        UUID uuid = UUID.fromString("94f39d29-7d6d-437d-973b-fba39e49d4ee"); //Standard SerialPortService ID
+        UUID uuid = UUID.fromString("94f39d29-7d6d-437d-973b-fba39e49d4ee"); //SerialPortService ID
         try {
 
             _btSocket = _Device.createRfcommSocketToServiceRecord(uuid);
@@ -52,8 +51,8 @@ public class MainActivity extends AppCompatActivity {
 
             }
             String msg = msg2send;
-            OutputStream mmOutputStream = _btSocket.getOutputStream();
-            mmOutputStream.write(msg.getBytes());//envia a msg para o rpi
+            OutputStream _OutputStream = _btSocket.getOutputStream();
+            _OutputStream.write(msg.getBytes());//envia a msg para o rpi
 
         } catch (IOException e) {
             e.printStackTrace();
@@ -75,45 +74,41 @@ public class MainActivity extends AppCompatActivity {
         final TextView _actualTempText = (TextView)findViewById(R.id.actualTempText);
         final TextView _desiredTempText = (TextView)findViewById(R.id.desiredTempText);
         final TextView _opTypeText = (TextView)findViewById(R.id._opType);
-
         final ChairStateUpdater chairStateUpdater = new ChairStateUpdater(_opTypeText,_opImage);
-        final TemperatureUpdater _actualTemperatureUpdater = new TemperatureUpdater(_actualTempText,_actualTempBar,chairStateUpdater);
-        final TemperatureUpdater _desiredTemperatureUpdater = new TemperatureUpdater(_desiredTempText,_desiredTempBar,chairStateUpdater);
-        chairStateUpdater.UpdateView(_actualTemperatureUpdater.getTemperature(),lastSentDesiredTemp);
+        final TemperatureUpdater actualTemperatureUpdater = new TemperatureUpdater(_actualTempText,_actualTempBar,chairStateUpdater);
+        final TemperatureUpdater desiredTemperatureUpdater = new TemperatureUpdater(_desiredTempText,_desiredTempBar,chairStateUpdater);
+        chairStateUpdater.UpdateView(actualTemperatureUpdater.getTemperature(),_lastSentDesiredTemp);
         final BluetoothAdapter mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
-
 
         final class CommunicationThread implements Runnable {
 
             private String btMsg;
 
-            public CommunicationThread(String msg) {
-                btMsg = msg;
-            }
             public CommunicationThread(){
                 btMsg = "";
             }
+
             public void setBtMsg(String msg){
                 btMsg = msg;
             }
 
             public void run() {
                 while (true){
-                    if(sendMsg) {
-                        setBtMsg("desiredtemp="+lastSentDesiredTemp);
+                    if(_sendMsg) {
+                        setBtMsg("desiredtemp="+_lastSentDesiredTemp);
                         sendBtMsg(btMsg);
                         while (!Thread.currentThread().isInterrupted()) {
                             int bytesAvailable;
                             boolean workDone = false;
                             try {
-                                final InputStream mmInputStream;
-                                mmInputStream = _btSocket.getInputStream();
-                                bytesAvailable = mmInputStream.available();
+                                final InputStream _InputStream;
+                                _InputStream = _btSocket.getInputStream();
+                                bytesAvailable = _InputStream.available();
                                 if (bytesAvailable > 0) {
                                     byte[] packetBytes = new byte[bytesAvailable];
                                     Log.e("UbiChair recv bt", "bytes available");
                                     byte[] readBuffer = new byte[1024];
-                                    mmInputStream.read(packetBytes);
+                                    _InputStream.read(packetBytes);
 
                                     for (int i = 0; i < bytesAvailable; i++) {
                                         byte b = packetBytes[i];
@@ -123,14 +118,13 @@ public class MainActivity extends AppCompatActivity {
                                             System.arraycopy(readBuffer, 0, encodedBytes, 0, encodedBytes.length);
                                             final String data = new String(encodedBytes, "UTF-8");
                                             readBufferPosition = 0;
-                                            //The variable data now contains our full command
                                             handler.post(new Runnable() {
                                                 public void run() {
                                                     Toast.makeText(MainActivity.this, "Received data: " + data, Toast.LENGTH_LONG).show();
                                                     String[] aux = data.split("=");
                                                     int auxActualTemp = Integer.parseInt(aux[1]);
-                                                    _actualTemperatureUpdater.setTemperature(auxActualTemp);
-                                                    chairStateUpdater.UpdateView(_actualTemperatureUpdater.getTemperature(), lastSentDesiredTemp);
+                                                    actualTemperatureUpdater.setTemperature(auxActualTemp);
+                                                    chairStateUpdater.UpdateView(actualTemperatureUpdater.getTemperature(), _lastSentDesiredTemp);
                                                 }
                                             });
                                             workDone = true;
@@ -141,7 +135,7 @@ public class MainActivity extends AppCompatActivity {
                                     }
                                     if (workDone == true) {
                                         _btSocket.close();
-                                        sendMsg = false;
+                                        _sendMsg = false;
                                         Log.e("UbiChair", "socket closed");
                                         break;
                                     }
@@ -169,7 +163,7 @@ public class MainActivity extends AppCompatActivity {
                     @Override
                     public void run() {
                         if(chairStateUpdater.getState() != 0){
-                            sendMsg = true;
+                            _sendMsg = true;
                         }
                     }
                 });
@@ -180,20 +174,18 @@ public class MainActivity extends AppCompatActivity {
             public void onClick(View v) {
                 // Perform action on change temperature button click
                 if (mBluetoothAdapter.isEnabled()) {
-                    lastSentDesiredTemp = _desiredTemperatureUpdater.getTemperature();
+                    _lastSentDesiredTemp = desiredTemperatureUpdater.getTemperature();
                     if (chairStateUpdater.getState() == 0) {
-                        sendMsg = true;
+                        _sendMsg = true;
                         new Thread(communicationThread).start();
 
                     } else {
-                        sendMsg = true;
+                        _sendMsg = true;
                     }
                 } else {
                     Toast.makeText(MainActivity.this,"Please enable Bluetooth!",Toast.LENGTH_LONG).show();
                 }
 
-         /*       (new Thread(new CommunicationThread("desiredtemp="+lastSentDesiredTemp))).start(); //envia o valor da temperatura
-                sendMsg = true;*/
 
 
             }
@@ -222,9 +214,8 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
         }
-
-
     }
+
     public class ChairStateUpdater{
         private TextView textView;
         private ImageView image;
@@ -237,7 +228,7 @@ public class MainActivity extends AppCompatActivity {
             state = 0;
         }
 
-        public void UpdateView(int actualTemperature, int desiredTemperature) {
+        public void UpdateView(int actualTemperature, int desiredTemperature) {//dá update na view, conforme o que a cadeira está a fazer (aquecer, arrefecer ou idle)
             if (state == 1) {
                 image.setVisibility(View.VISIBLE);
                 if (actualTemperature > desiredTemperature) {
@@ -354,7 +345,7 @@ public class MainActivity extends AppCompatActivity {
 
 
         public void UpdateTemperature() {
-            if (CSU.getState() == 0 && description == "actualTemperature") {
+            if (CSU.getState() == 0 && description == "actualTemperature") {//neste caso sabemos que ainda não conectamos uma unica vez à cadeira logo nao sabemos a temperatura atual da mesma
                 Temperature = 15;
                 TemperatureBar.setProgress(Temperature - 15);
                 TemperatureText.setText("No connection");
