@@ -12,9 +12,11 @@ import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
 import android.text.Editable;
 import android.text.TextWatcher;
+import android.text.style.UpdateAppearance;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
+import android.widget.ImageView;
 import android.widget.ProgressBar;
 import android.widget.SeekBar;
 import android.widget.TextView;
@@ -28,25 +30,29 @@ import java.util.UUID;
 
 public class MainActivity extends AppCompatActivity {
 
-    BluetoothSocket mmSocket;
-    BluetoothDevice mmDevice = null;
+    BluetoothSocket _btSocket;
+    BluetoothDevice _Device = null;
+    int lastSentDesiredTemp = 0 ;
+    boolean sendMsg = false;
+    
 
     final byte delimiter = 59; //caracter ; em ASCII
     int readBufferPosition = 0;
 
-
+ //testar o state
     public void sendBtMsg(String msg2send){
         //UUID uuid = UUID.fromString("00001101-0000-1000-8000-00805f9b34fb"); //Standard SerialPortService ID
         UUID uuid = UUID.fromString("94f39d29-7d6d-437d-973b-fba39e49d4ee"); //Standard SerialPortService ID
         try {
 
-            mmSocket = mmDevice.createRfcommSocketToServiceRecord(uuid);
-            if (!mmSocket.isConnected()){
-                mmSocket.connect();//liga-se ao socket
-            }
+            _btSocket = _Device.createRfcommSocketToServiceRecord(uuid);
+            if (!_btSocket.isConnected()){
+                Log.e("UbiChair","connected to socket");
+                _btSocket.connect();//liga-se ao socket
 
+            }
             String msg = msg2send;
-            OutputStream mmOutputStream = mmSocket.getOutputStream();
+            OutputStream mmOutputStream = _btSocket.getOutputStream();
             mmOutputStream.write(msg.getBytes());//envia a msg para o rpi
 
         } catch (IOException e) {
@@ -60,112 +66,134 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+        final Handler delayedHandler = new Handler();
         final Handler handler = new Handler();
-        final TextView myLabel = (TextView)findViewById(R.id.btText);
+        final ImageView _opImage = (ImageView)findViewById(R.id.operationImage);
         final Button _ChangeTempButton = (Button)findViewById(R.id.okButton);
         final ProgressBar _actualTempBar = (ProgressBar)findViewById(R.id.actualTempBar);
         final SeekBar _desiredTempBar = (SeekBar)findViewById(R.id.desiredTempBar);
         final TextView _actualTempText = (TextView)findViewById(R.id.actualTempText);
         final TextView _desiredTempText = (TextView)findViewById(R.id.desiredTempText);
         final TextView _opTypeText = (TextView)findViewById(R.id._opType);
-        final TemperatureUpdater _desiredTemperatureUpdater = new TemperatureUpdater(_desiredTempText,_desiredTempBar);
-        _desiredTemperatureUpdater.setTemperature(29);
-        final TemperatureUpdater _actualTemperatureUpdater = new TemperatureUpdater(_actualTempText,_actualTempBar);
-        _actualTemperatureUpdater.setTemperature(28);
-        UpdateViewByChairState(_opTypeText,_actualTemperatureUpdater.getTemperature(),_desiredTemperatureUpdater.getTemperature());
 
-        BluetoothAdapter mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
+        final ChairStateUpdater chairStateUpdater = new ChairStateUpdater(_opTypeText,_opImage);
+        final TemperatureUpdater _actualTemperatureUpdater = new TemperatureUpdater(_actualTempText,_actualTempBar,chairStateUpdater);
+        final TemperatureUpdater _desiredTemperatureUpdater = new TemperatureUpdater(_desiredTempText,_desiredTempBar,chairStateUpdater);
+        chairStateUpdater.UpdateView(_actualTemperatureUpdater.getTemperature(),lastSentDesiredTemp);
+        final BluetoothAdapter mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
 
-        final class workerThread implements Runnable {
+
+        final class CommunicationThread implements Runnable {
 
             private String btMsg;
 
-            public workerThread(String msg) {
+            public CommunicationThread(String msg) {
+                btMsg = msg;
+            }
+            public CommunicationThread(){
+                btMsg = "";
+            }
+            public void setBtMsg(String msg){
                 btMsg = msg;
             }
 
-            public void run()
-            {
-                sendBtMsg(btMsg);
-                while(!Thread.currentThread().isInterrupted())
-                {
-                    int bytesAvailable;
-                    boolean workDone = false;
+            public void run() {
+                while (true){
+                    if(sendMsg) {
+                        setBtMsg("desiredtemp="+lastSentDesiredTemp);
+                        sendBtMsg(btMsg);
+                        while (!Thread.currentThread().isInterrupted()) {
+                            int bytesAvailable;
+                            boolean workDone = false;
+                            try {
+                                final InputStream mmInputStream;
+                                mmInputStream = _btSocket.getInputStream();
+                                bytesAvailable = mmInputStream.available();
+                                if (bytesAvailable > 0) {
+                                    byte[] packetBytes = new byte[bytesAvailable];
+                                    Log.e("UbiChair recv bt", "bytes available");
+                                    byte[] readBuffer = new byte[1024];
+                                    mmInputStream.read(packetBytes);
 
-                    try {
-
-
-
-                        final InputStream mmInputStream;
-                        mmInputStream = mmSocket.getInputStream();
-                        bytesAvailable = mmInputStream.available();
-                        if(bytesAvailable > 0)
-                        {
-
-                            byte[] packetBytes = new byte[bytesAvailable];
-                            Log.e("UbiChair recv bt","bytes available");
-                            byte[] readBuffer = new byte[1024];
-                            mmInputStream.read(packetBytes);
-
-                            for(int i=0;i<bytesAvailable;i++)
-                            {
-                                byte b = packetBytes[i];
-                                if(b == delimiter)
-                                {
-                                    byte[] encodedBytes = new byte[readBufferPosition];
-                                    System.arraycopy(readBuffer, 0, encodedBytes, 0, encodedBytes.length);
-                                    final String data = new String(encodedBytes, "UTF-8");
-                                    readBufferPosition = 0;
-
-
-                                    //The variable data now contains our full command
-                                    handler.post(new Runnable()
-                                    {
-                                        public void run()
-                                        {
-                                            myLabel.setText(data);
-                                            String[] aux = data.split("=");
-                                            int auxActualTemp = Integer.parseInt(aux[1]); //fazer listener para actualtemperature change
-                                            _actualTemperatureUpdater.setTemperature(auxActualTemp);//testar
-                                            //_actualTempText.setText(""+_actualTemperature+"");
-                                            //_actualTempBar.setProgress(_actualTemperature -15);
-
+                                    for (int i = 0; i < bytesAvailable; i++) {
+                                        byte b = packetBytes[i];
+                                        if (b == delimiter) {
+                                            chairStateUpdater.setState(1);
+                                            byte[] encodedBytes = new byte[readBufferPosition];
+                                            System.arraycopy(readBuffer, 0, encodedBytes, 0, encodedBytes.length);
+                                            final String data = new String(encodedBytes, "UTF-8");
+                                            readBufferPosition = 0;
+                                            //The variable data now contains our full command
+                                            handler.post(new Runnable() {
+                                                public void run() {
+                                                    Toast.makeText(MainActivity.this, "Received data: " + data, Toast.LENGTH_LONG).show();
+                                                    String[] aux = data.split("=");
+                                                    int auxActualTemp = Integer.parseInt(aux[1]);
+                                                    _actualTemperatureUpdater.setTemperature(auxActualTemp);
+                                                    chairStateUpdater.UpdateView(_actualTemperatureUpdater.getTemperature(), lastSentDesiredTemp);
+                                                }
+                                            });
+                                            workDone = true;
+                                            break;
+                                        } else {
+                                            readBuffer[readBufferPosition++] = b;
                                         }
-                                    });
-
-                                    workDone = true;
-                                    break;
-
-
+                                    }
+                                    if (workDone == true) {
+                                        _btSocket.close();
+                                        sendMsg = false;
+                                        Log.e("UbiChair", "socket closed");
+                                        break;
+                                    }
                                 }
-                                else
-                                {
-                                    readBuffer[readBufferPosition++] = b;
-                                }
+                            } catch (IOException e) {
+                                // TODO Auto-generated catch block
+                                e.printStackTrace();
                             }
-
-                            if (workDone == true){
-                                mmSocket.close();
-                                break;
-                            }
-
                         }
-                    } catch (IOException e) {
-                        // TODO Auto-generated catch block
-                        e.printStackTrace();
                     }
-
                 }
             }
         };
 
+        final CommunicationThread communicationThread;
+        communicationThread = new CommunicationThread();
+
+
+
+   MainActivity.this.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                delayedHandler.postDelayed(this, 10000);//update de 10 em 10 segundos
+                delayedHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if(chairStateUpdater.getState() != 0){
+                            sendMsg = true;
+                        }
+                    }
+                });
+            }
+        });
+
         _ChangeTempButton.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
                 // Perform action on change temperature button click
-                UpdateViewByChairState(_opTypeText,_actualTemperatureUpdater.getTemperature(),_desiredTemperatureUpdater.getTemperature());
-                Toast.makeText(MainActivity.this,
-                        "desiredtemp="+_desiredTemperatureUpdater.getTemperature(), Toast.LENGTH_LONG).show();//mostra o que foi enviado no socket bt
-                (new Thread(new workerThread("desiredtemp="+_desiredTemperatureUpdater.getTemperature()))).start(); //envia o valor da temperatura
+                if (mBluetoothAdapter.isEnabled()) {
+                    lastSentDesiredTemp = _desiredTemperatureUpdater.getTemperature();
+                    if (chairStateUpdater.getState() == 0) {
+                        sendMsg = true;
+                        new Thread(communicationThread).start();
+
+                    } else {
+                        sendMsg = true;
+                    }
+                } else {
+                    Toast.makeText(MainActivity.this,"Please enable Bluetooth!",Toast.LENGTH_LONG).show();
+                }
+
+         /*       (new Thread(new CommunicationThread("desiredtemp="+lastSentDesiredTemp))).start(); //envia o valor da temperatura
+                sendMsg = true;*/
 
 
             }
@@ -189,7 +217,7 @@ public class MainActivity extends AppCompatActivity {
                 if (device.getName().equals("raspberrypi")) //nome do dispositivo
                 {
                     Log.e("Device connected: ", device.getName());
-                    mmDevice = device;
+                    _Device = device;
                     break;
                 }
             }
@@ -197,32 +225,68 @@ public class MainActivity extends AppCompatActivity {
 
 
     }
-    public void UpdateViewByChairState(TextView textView, int actualTemperature, int desiredTemperature){
-        if(actualTemperature > desiredTemperature){
-            textView.setText("Cooling");
-            textView.setTextColor(Color.BLUE);
-        } else if (actualTemperature < desiredTemperature){
-            textView.setText("Heating");
-            textView.setTextColor(Color.RED);
-        } else {
-            textView.setText("Temperature is fine");
-            textView.setTextColor(Color.GREEN);
+    public class ChairStateUpdater{
+        private TextView textView;
+        private ImageView image;
+        private int state;
+
+        public ChairStateUpdater(TextView tv, ImageView Image){
+            textView = tv;
+            image = Image;
+            image.setVisibility(View.INVISIBLE);
+            state = 0;
+        }
+
+        public void UpdateView(int actualTemperature, int desiredTemperature) {
+            if (state == 1) {
+                image.setVisibility(View.VISIBLE);
+                if (actualTemperature > desiredTemperature) {
+                    textView.setText("Cooling");
+                    textView.setTextColor(Color.BLUE);
+                    image.setImageResource(R.drawable.cooling);
+                } else if (actualTemperature < desiredTemperature) {
+                    textView.setText("Heating");
+                    textView.setTextColor(Color.RED);
+                    image.setImageResource(R.drawable.heating);
+                } else {
+                    textView.setText("Temperature is fine");
+                    textView.setTextColor(Color.GREEN);
+                    image.setVisibility(View.INVISIBLE);
+                    //image.setImageResource(R.drawable.ok);
+                }
+            } else {
+                textView.setText("No connection to UbiChair");
+                textView.setTextColor(Color.BLACK);
+                image.setVisibility(View.INVISIBLE);
+            }
+        }
+
+        public int getState(){
+            return state;
+        }
+
+        public void setState(int state){
+            this.state = state;
         }
     }
 
 
-    final class TemperatureUpdater{
-        private TextView TemperatureText;
-        private ProgressBar TemperatureBar;
-        private int Temperature;
-        public TemperatureUpdater(TextView tv, ProgressBar sb){
-            Temperature = 20;
-            TemperatureText=tv;
+    public class TemperatureUpdater {
+        private TextView TemperatureText; //texto que apresenta a temperatura
+        private ProgressBar TemperatureBar; //barra da temperatura (progressbar ou seekbar conforme o tipo)
+        private int Temperature; // temperatura pode ser atual ou desired
+        private String description; //Descrição do tipo de temperatura (actual ou desired) actual vem da cadeira, desired é alterada nesta app
+        private ChairStateUpdater CSU;
+
+        public TemperatureUpdater(TextView tv, ProgressBar sb, ChairStateUpdater csu) {
+            description = "actualTemperature";
+            TemperatureText = tv;
             TemperatureBar = sb;
             TemperatureBar.setMax(25);
-            TemperatureBar.setProgress(Temperature -15);
+            CSU = csu;
 
-            if (TemperatureBar instanceof SeekBar){
+            if (TemperatureBar instanceof SeekBar) { //se for seekbar sabemos que é a desired temp e necessita de um listener quando o utilizador mexe nesta
+                description = "desiredTemperature";
                 ((SeekBar) TemperatureBar).setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                     @Override
                     public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
@@ -236,9 +300,10 @@ public class MainActivity extends AppCompatActivity {
 
                     @Override
                     public void onStopTrackingTouch(SeekBar seekBar) {
-
                     }
                 });
+
+
             }
 
             TemperatureText.addTextChangedListener(new TextWatcher() {
@@ -249,13 +314,13 @@ public class MainActivity extends AppCompatActivity {
 
                 @Override
                 public void onTextChanged(CharSequence s, int start, int before, int count) {
-                    if(TemperatureBar.getProgress()>7 && TemperatureBar.getProgress()<=14){
-                        TemperatureBar.getProgressDrawable().setColorFilter(Color.GREEN, PorterDuff.Mode.SRC_IN);
+                    if (TemperatureBar.getProgress() > 7 && TemperatureBar.getProgress() <= 14) {
+                        TemperatureBar.getProgressDrawable().setColorFilter(Color.YELLOW, PorterDuff.Mode.SRC_IN);
                     }
-                    if(TemperatureBar.getProgress()<=7){
-                        TemperatureBar.getProgressDrawable().setColorFilter(Color.BLUE, PorterDuff.Mode.SRC_IN);
+                    if (TemperatureBar.getProgress() <= 7) {
+                        TemperatureBar.getProgressDrawable().setColorFilter(Color.CYAN, PorterDuff.Mode.SRC_IN);
                     }
-                    if(TemperatureBar.getProgress()>14){
+                    if (TemperatureBar.getProgress() > 14) {
                         TemperatureBar.getProgressDrawable().setColorFilter(Color.RED, PorterDuff.Mode.SRC_IN);
                     }
                 }
@@ -265,30 +330,41 @@ public class MainActivity extends AppCompatActivity {
 
                 }
             });
-
+            Temperature = 20;
             setTemperature(Temperature);
         }
 
-        public int getTemperature(){
+        public int getTemperature() {
             return Temperature;
         }
-        public TextView getTemperatureText(){
+
+        public TextView getTemperatureText() {
             return TemperatureText;
         } //se necessário
-        public ProgressBar getTemperatureBar(){
+
+        public ProgressBar getTemperatureBar() {
             return TemperatureBar;
         } // se necessário
-        public void setTemperature(int temp){
+
+        public void setTemperature(int temp) {
             Temperature = temp;
-            TemperatureBar.setProgress(Temperature -15);
+            TemperatureBar.setProgress(Temperature - 15);
             UpdateTemperature();
         }
 
-        public void UpdateTemperature(){
-            Temperature = TemperatureBar.getProgress()+15;
-            TemperatureText.setText(""+Temperature+"");
 
+        public void UpdateTemperature() {
+            if (CSU.getState() == 0 && description == "actualTemperature") {
+                Temperature = 15;
+                TemperatureBar.setProgress(Temperature - 15);
+                TemperatureText.setText("No connection");
+                TemperatureBar.getProgressDrawable().setColorFilter(Color.BLACK, PorterDuff.Mode.SRC_IN);
+            } else {
+
+                Temperature = TemperatureBar.getProgress() + 15;
+                TemperatureText.setText(Temperature + "ºC");
+
+            }
         }
     }
-
 }
